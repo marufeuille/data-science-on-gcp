@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # Copyright 2016 Google Inc.
 #
@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
 import shutil
 import logging
@@ -43,6 +44,7 @@ except ImportError as error:
     def remove_quote(text):
         return text.translate(None, '"')
 
+
 def download(YEAR, MONTH, destdir):
    '''
      Downloads on-time performance data and returns local filename
@@ -55,78 +57,75 @@ def download(YEAR, MONTH, destdir):
 
    url='https://www.transtats.bts.gov/DownLoad_Table.asp?Table_ID=236&Has_Group=3&Is_Zipped=0'
    filename = os.path.join(destdir, "{}{}.zip".format(YEAR, MONTH))
-   with open(filename, "wb") as fp:
-     response = urlopen(url, PARAMS)
-     fp.write(response.read())
-   logging.debug("{} saved".format(filename))
-   return filename
+   response = urlopen(url, PARAMS)
+   zipfile_stream = io.BytesIO(response.read())
+   zipfile_stream.seek(0)
+   logging.info('Downloaded zipfile.')
+   return zipfile_stream
 
-def zip_to_csv(filename, destdir):
-   zip_ref = zipfile.ZipFile(filename, 'r')
-   cwd = os.getcwd()
-   os.chdir(destdir)
-   zip_ref.extractall()
-   os.chdir(cwd)
-   csvfile = os.path.join(destdir, zip_ref.namelist()[0])
+
+def zip_to_csv(zipfile_stream, destdir):
+   zip_ref = zipfile.ZipFile(zipfile_stream, "r")
+   name = zip_ref.namelist()[0]
+   data = zip_ref.read(name)
    zip_ref.close()
-   logging.info("Extracted {}".format(csvfile))
-   return csvfile
+   logging.info('Extracted zipfile.')
+   return data
 
 
 class DataUnavailable(Exception):
    def __init__(self, message):
       self.message = message
 
+
 class UnexpectedFormat(Exception):
    def __init__(self, message):
       self.message = message
 
-def verify_ingest(csvfile):
+
+def verify_ingest(csvdata):
    expected_header = 'FL_DATE,UNIQUE_CARRIER,AIRLINE_ID,CARRIER,FL_NUM,ORIGIN_AIRPORT_ID,ORIGIN_AIRPORT_SEQ_ID,ORIGIN_CITY_MARKET_ID,ORIGIN,DEST_AIRPORT_ID,DEST_AIRPORT_SEQ_ID,DEST_CITY_MARKET_ID,DEST,CRS_DEP_TIME,DEP_TIME,DEP_DELAY,TAXI_OUT,WHEELS_OFF,WHEELS_ON,TAXI_IN,CRS_ARR_TIME,ARR_TIME,ARR_DELAY,CANCELLED,CANCELLATION_CODE,DIVERTED,DISTANCE'
+   
+   lines = csvdata.split("\n")
+   firstline = lines[0].strip()
+   if (firstline != expected_header):
+      msg = 'Got header={}, but expected={}'.format(
+                           firstline, expected_header)
+      logging.error(msg)
+      raise UnexpectedFormat(msg)
 
-   with open(csvfile, 'r') as csvfp:
-      firstline = csvfp.readline().strip()
-      if (firstline != expected_header):
-         os.remove(csvfile)
-         msg = 'Got header={}, but expected={}'.format(
-                             firstline, expected_header)
-         logging.error(msg)
-         raise UnexpectedFormat(msg)
-
-      if next(csvfp, None) == None:
-         os.remove(csvfile)
-         msg = ('Received a file from BTS that has only the header and no content')
-         raise DataUnavailable(msg)
+   if lines[1] == None:
+      msg = ('Received a file from BTS that has only the header and no content')
+      raise DataUnavailable(msg)
 
 
-def remove_quotes_comma(csvfile, year, month):
- '''
+def remove_quotes_comma(csvdata, year, month):
+   '''
      returns output_csv_file or raises DataUnavailable exception
- '''
- try:
-   outfile = os.path.join(os.path.dirname(csvfile),
-                          '{}{}.csv'.format(year, month))
-   with open(csvfile, 'r') as infp:
-     with open(outfile, 'w') as outfp:
-        for line in infp:
-           outline = line.rstrip().rstrip(',')
-           outline = remove_quote(outline)
-           outfp.write(outline)
-           outfp.write('\n')
-   logging.debug('Ingested {} ...'.format(outfile))
-   return outfile
- finally:
-   logging.debug("... removing {}".format(csvfile))
-   os.remove(csvfile)
+   '''
+   filename = '{}{}.csv'.format(year, month)
+   
+   with io.StringIO() as csvstream:
+      for line in csvdata.decode().split("\n"):
+         outline = line.rstrip().rstrip(',')
+         outline = remove_quote(outline)
+         csvstream.write(outline)
+         csvstream.write("\n")
+      csvstream.seek(0)
+      outcsv = csvstream.read()
+   logging.info('Removed quotes from csv.')
+   return outcsv
 
-def upload(csvfile, bucketname, blobname):
+
+def upload(csvdata, bucketname, blobname):
    client = storage.Client()
    bucket = client.get_bucket(bucketname)
    blob = Blob(blobname, bucket)
-   blob.upload_from_filename(csvfile)
+   blob.upload_from_string(csvdata)
    gcslocation = 'gs://{}/{}'.format(bucketname, blobname)
    logging.info('Uploaded {} ...'.format(gcslocation))
    return gcslocation
+
 
 def ingest(year, month, bucket):
    '''
@@ -138,13 +137,14 @@ def ingest(year, month, bucket):
    try:
       zipfile = download(year, month, tempdir)
       bts_csv = zip_to_csv(zipfile, tempdir)
-      csvfile = remove_quotes_comma(bts_csv, year, month)
-      verify_ingest(csvfile)
-      gcsloc = 'flights/raw/{}'.format(os.path.basename(csvfile))
-      return upload(csvfile, bucket, gcsloc)
+      csvdata = remove_quotes_comma(bts_csv, year, month)
+      verify_ingest(csvdata)
+      gcsloc = 'flights/raw/{}-{}.csv'.format(year, month)
+      return upload(csvdata, bucket, gcsloc)
    finally:
       logging.debug('Cleaning up by removing {}'.format(tempdir))
       shutil.rmtree(tempdir)
+
 
 def next_month(bucketname):
    '''
@@ -160,12 +160,14 @@ def next_month(bucketname):
    month = lastfile[4:6]
    return compute_next_month(year, month)
 
+
 def compute_next_month(year, month):
    dt = datetime.datetime(int(year), int(month), 15) # 15th of month
    dt = dt + datetime.timedelta(30) # will always go to next month
    logging.debug('The next month is {}'.format(dt))
    return '{}'.format(dt.year), '{:02d}'.format(dt.month)
-  
+
+
 if __name__ == '__main__':
    import argparse
    parser = argparse.ArgumentParser(description='ingest flights data from BTS website to Google Cloud Storage')
