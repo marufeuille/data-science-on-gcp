@@ -48,14 +48,6 @@ class FieldNumberLookup():
     else:
       return FieldNumberLookup(event, 9, 28, 29, 16, 15)
 		
-
-class SplitFn(beam.DoFn):
-  def __init__(self, eventType):
-    self.eventType = eventType
-
-  def process(self, element):
-    return [Flight(element.decode("utf-8").split(","), self.eventType)]
-
 def movingAverageOf(p, project, event, speed_up_factor):
   averagingInterval = 3600 / speed_up_factor
   averagingFrequency = averagingInterval / 2
@@ -66,7 +58,7 @@ def movingAverageOf(p, project, event, speed_up_factor):
     p 
     | beam.io.ReadFromPubSub(topic=topic)
     | beam.WindowInto(window.SlidingWindows(averagingInterval, averagingFrequency))
-    | beam.ParDo(SplitFn(eventType))
+    | beam.Map(lambda elm: Flight(elm.decode("utf-8").split(","), eventType))
   )
 
   delay = (
