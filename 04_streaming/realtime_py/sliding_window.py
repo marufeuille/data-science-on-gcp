@@ -67,8 +67,8 @@ def create_table(fields):
   return featdict
 
 
-def movingAverageOf(p, project, event):
-  averagingInterval = 3600 / 60
+def movingAverageOf(p, project, event, speed_up_factor):
+  averagingInterval = 3600 / speed_up_factor
   averagingFrequency = averagingInterval / 2
   topic = "projects/{}/topics/{}".format(project, event)
   eventType = FieldNumberLookup.create(event)
@@ -88,36 +88,28 @@ def movingAverageOf(p, project, event):
   )
 
 
-def run(project, output_table, bucket, dataset):
+def run(project, speed_up_factor):
   """Build and run the pipeline."""
 
   argv = [
       '--project={0}'.format(project),
-      '--job_name=ch04streaming-py',
+      '--job_name=ch04slidingwindow-py',
       '--save_main_session',
-      '--staging_location=gs://{0}/flights/streaming/staging'.format(bucket),
-      '--temp_location=gs://{0}/flights/streaming/temp/'.format(bucket),
-      '--max_num_workers=1',
-      '--autoscaling_algorithm=THROUGHPUT_BASED',
       '--runner=DirectRunner'
   ]
 
   pipeline_options = PipelineOptions(argv)
   pipeline_options.view_as(StandardOptions).streaming = True
 
-  output_table = "{}:{}.{}".format(project, dataset, output_table)
-
   with beam.Pipeline(options=pipeline_options) as p:
-    movingAverageOf(p, project, "departed")
+    movingAverageOf(p, project, "departed", speed_up_factor)
 
 
 if __name__ == '__main__':
    logging.getLogger().setLevel(logging.INFO)
    parser = argparse.ArgumentParser(description='Run pipeline on the cloud')
    parser.add_argument('-p','--project', help='Unique project ID', required=True)
-   parser.add_argument('-o','--output_table', help='BigQuery Table where your data is stored after processing.', default='raw_output')
-   parser.add_argument('-b','--bucket', help='Bucket for staging', default='bigdata_demo')
-   parser.add_argument('-d','--dataset', help='Bucket for staging', default='flights')
+   parser.add_argument('-s','--speed_up_factor', help='Bucket for staging', default=60)
    args = vars(parser.parse_args())
   
-   run(project=args['project'], output_table=args['output_table'], bucket=args['bucket'], dataset=args['dataset'])
+   run(project=args['project'], speed_up_factor=args['speed_up_factor'])
