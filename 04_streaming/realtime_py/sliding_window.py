@@ -56,17 +56,6 @@ class SplitFn(beam.DoFn):
   def process(self, element):
     return [Flight(element.decode("utf-8").split(","), self.eventType)]
 
-def create_table(fields):
-  header = 'FL_DATE,UNIQUE_CARRIER,AIRLINE_ID,CARRIER,FL_NUM,ORIGIN_AIRPORT_ID,ORIGIN_AIRPORT_SEQ_ID,ORIGIN_CITY_MARKET_ID,ORIGIN,DEST_AIRPORT_ID,DEST_AIRPORT_SEQ_ID,DEST_CITY_MARKET_ID,DEST,CRS_DEP_TIME,DEP_TIME,DEP_DELAY,TAXI_OUT,WHEELS_OFF,WHEELS_ON,TAXI_IN,CRS_ARR_TIME,ARR_TIME,ARR_DELAY,CANCELLED,CANCELLATION_CODE,DIVERTED,DISTANCE,DEP_AIRPORT_LAT,DEP_AIRPORT_LON,DEP_AIRPORT_TZOFFSET,ARR_AIRPORT_LAT,ARR_AIRPORT_LON,ARR_AIRPORT_TZOFFSET,EVENT,NOTIFY_TIME'.split(',')
-
-  featdict = {}
-  for name, value in zip(header, fields):
-    if value == '':
-      continue
-    featdict[name] = value
-  return featdict
-
-
 def movingAverageOf(p, project, event, speed_up_factor):
   averagingInterval = 3600 / speed_up_factor
   averagingFrequency = averagingInterval / 2
