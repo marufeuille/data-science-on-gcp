@@ -18,6 +18,15 @@ class AirPort():
     self.latitude = float(fields[e.FN_lat])
     self.longitude = float(fields[e.FN_lon])
 
+  def __lt__(self, others):
+    return self.name < others.name
+
+  def __gt__(self, others):
+    return self.name > others.name
+
+  def __eq__(self, others):
+    return self.name == others.name
+
 class AirPortStats():
   def __init__(self, airport, arr_delay, dep_delay, timestamp, num_flights):
     self.airport = airport
@@ -26,11 +35,13 @@ class AirPortStats():
     self.timestamp = timestamp
     self.num_flights = num_flights
 
+
 class Flight():
   def __init__(self, fields, e):
     self.airport = AirPort(fields, e)
     self.delay = float(fields[e.FN_delay])
     self.timestamp = fields[e.FN_timestamp]
+
 
 class FieldNumberLookup():
   def __init__(self, e, fN_airport, fN_lat, fN_lon, fN_delay, fN_timestamp):
@@ -47,7 +58,8 @@ class FieldNumberLookup():
       return FieldNumberLookup(event, 13, 31, 32, 23, 22)
     else:
       return FieldNumberLookup(event, 9, 28, 29, 16, 15)
-		
+
+
 def movingAverageOf(p, project, event, speed_up_factor):
   averagingInterval = 3600 / speed_up_factor
   averagingFrequency = averagingInterval / 2
@@ -56,17 +68,32 @@ def movingAverageOf(p, project, event, speed_up_factor):
 
   flights = (
     p 
-    | beam.io.ReadFromPubSub(topic=topic)
-    | beam.WindowInto(window.SlidingWindows(averagingInterval, averagingFrequency))
-    | beam.Map(lambda elm: Flight(elm.decode("utf-8").split(","), eventType))
+    | "{}:read".format(event) >> beam.io.ReadFromPubSub(topic=topic)
+    | "{}:window".format(event) >> beam.WindowInto(window.SlidingWindows(averagingInterval, averagingFrequency))
+    | "{}:split".format(event) >> beam.Map(lambda elm: Flight(elm.decode("utf-8").split(","), eventType))
   )
 
-  delay = (
+  stats = {}
+
+  stats["delay"] = (
     flights
-    | beam.Map(lambda elm: (elm.airport, elm.delay))
-    | beam.combiners.Mean.PerKey()
-    | beam.Map(lambda elm: print(elm[0].name, elm[1]))
+    | "{}:delay".format(event) >> beam.Map(lambda elm: (elm.airport, elm.delay))
+    | "{}:delay_mean".format(event) >> beam.combiners.Mean.PerKey()
   )
+
+  stats["timestamp"] = (
+    flights
+    | "{}:timestamp".format(event) >> beam.Map(lambda elm: (elm.airport, elm.timestamp))
+    | "{}:timestamp_max".format(event) >> beam.CombineGlobally(lambda elements: max(elements or [None])).without_defaults()
+  )
+
+  stats["num_flights"] = (
+    flights
+    | "{}:num_flights".format(event) >> beam.Map(lambda elm: (elm.airport, 1))
+    | "{}:sum_num_flights".format(event) >> beam.combiners.Count.PerKey()
+  )
+
+  return stats
 
 
 def run(project, speed_up_factor):
@@ -83,8 +110,31 @@ def run(project, speed_up_factor):
   pipeline_options.view_as(StandardOptions).streaming = True
 
   with beam.Pipeline(options=pipeline_options) as p:
-    movingAverageOf(p, project, "departed", speed_up_factor)
+    arr = movingAverageOf(p, project, "arrived", speed_up_factor)
+    dep = movingAverageOf(p, project, "departed", speed_up_factor)
 
+    arr_delay = arr["delay"]
+    arr_timestamp = arr["timestamp"]
+    arr_num_flights = arr["num_flights"]
+
+    dep_delay = dep["delay"]
+    dep_timestamp = dep["timestamp"]
+    dep_num_flights = dep["num_flights"]
+
+    (
+      (
+        {
+          'arr_delay': arr_delay,
+          'arr_timestamp': arr_timestamp,
+          'arr_num_flights': arr_num_flights,
+          'dep_delay': dep_delay,
+          'dep_timestamp': dep_timestamp,
+          'dep_num_flights': dep_num_flights
+        }
+      )
+      | 'Merge' >> beam.CoGroupByKey()
+      | beam.Map(print)
+    )
 
 if __name__ == '__main__':
    logging.getLogger().setLevel(logging.INFO)
