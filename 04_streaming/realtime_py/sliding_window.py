@@ -27,7 +27,7 @@ class AirPort():
   def __eq__(self, others):
     return self.name == others.name
 
-class AirPortStats():
+class AirportStats():
   def __init__(self, airport, arr_delay, dep_delay, timestamp, num_flights):
     self.airport = airport
     self.arr_delay = arr_delay
@@ -60,6 +60,22 @@ class FieldNumberLookup():
       return FieldNumberLookup(event, 9, 28, 29, 16, 15)
 
 
+def stats(elm):
+  print(elm)
+  airport = elm[0]
+  values_dic = elm[1]
+  arrDelay = values_dic["arr_delay"][0] if len(values_dic["arr_delay"]) > 0 else -999
+  depDelay = values_dic["dep_delay"][0] if len(values_dic["dep_delay"]) > 0 else -999
+  arrTs = values_dic["arr_timestamp"][0] if len(values_dic["arr_timestamp"]) > 0 else ""
+  depTs = values_dic["dep_timestamp"][0] if len(values_dic["dep_timestamp"]) > 0 else ""
+  arrNumflights = values_dic["arr_num_flights"][0] if len(values_dic["arr_num_flights"]) > 0 else 0
+  depNumflights = values_dic["dep_num_flights"][0] if len(values_dic["dep_num_flights"]) > 0 else 0
+  print(arrTs, depTs)
+  timestamp = arrTs if arrTs > depTs else depTs
+  num_flights = int(arrNumflights) + int(depNumflights)
+  return AirportStats(airport, arrDelay, depDelay, timestamp, num_flights)
+
+
 def movingAverageOf(p, project, event, speed_up_factor):
   averagingInterval = 3600 / speed_up_factor
   averagingFrequency = averagingInterval / 2
@@ -70,33 +86,50 @@ def movingAverageOf(p, project, event, speed_up_factor):
     p 
     | "{}:read".format(event) >> beam.io.ReadFromPubSub(topic=topic)
     | "{}:window".format(event) >> beam.WindowInto(window.SlidingWindows(averagingInterval, averagingFrequency))
-    | "{}:split".format(event) >> beam.Map(lambda elm: Flight(elm.decode("utf-8").split(","), eventType))
+    | "{}:parse".format(event) >> beam.Map(lambda elm: Flight(elm.decode("utf-8").split(","), eventType))
   )
 
   stats = {}
 
   stats["delay"] = (
     flights
-    | "{}:delay".format(event) >> beam.Map(lambda elm: (elm.airport, elm.delay))
-    | "{}:delay_mean".format(event) >> beam.combiners.Mean.PerKey()
+    | "{}:airport_delay".format(event) >> beam.Map(lambda elm: (elm.airport, elm.delay))
+    | "{}:avgdelay".format(event) >> beam.combiners.Mean.PerKey()
   )
 
   stats["timestamp"] = (
     flights
-    | "{}:timestamp".format(event) >> beam.Map(lambda elm: (elm.airport, elm.timestamp))
-    | "{}:timestamp_max".format(event) >> beam.CombineGlobally(lambda elements: max(elements or [None])).without_defaults()
+    | "{}:timestamps".format(event) >> beam.Map(lambda elm: (elm.airport, elm.timestamp))
+    | "{}:lastTimeStamp".format(event) >> beam.CombineGlobally(lambda elem: max(elem or [None])).without_defaults()
   )
 
   stats["num_flights"] = (
     flights
-    | "{}:num_flights".format(event) >> beam.Map(lambda elm: (elm.airport, 1))
-    | "{}:sum_num_flights".format(event) >> beam.combiners.Count.PerKey()
+    | "{}:numflights".format(event) >> beam.Map(lambda elm: (elm.airport, 1))
+    | "{}:total".format(event) >> beam.combiners.Count.PerKey()
   )
 
   return stats
 
+def toBQRow(stats):
+  bq_row = {}
+  bq_row["timestamp"] = stats.timestamp
+  bq_row["airport"] = stats.airport.name
+  bq_row["latitude"] = stats.airport.latitude
+  bq_row["longitude"] = stats.airport.longitude
 
-def run(project, speed_up_factor):
+  if stats.dep_delay > -998:
+    bq_row["dep_delay"] = stats.dep_delay
+  if stats.arr_delay > -998:
+    bq_row["arr_delay"] = stats.arr_delay
+
+  bq_row["num_flights"] = stats.num_flights
+
+  return bq_row
+
+
+
+def run(project, speed_up_factor, dataset, output_table):
   """Build and run the pipeline."""
 
   argv = [
@@ -108,6 +141,8 @@ def run(project, speed_up_factor):
 
   pipeline_options = PipelineOptions(argv)
   pipeline_options.view_as(StandardOptions).streaming = True
+
+  schema = "airport:string,latitude:float,longitude:float,timestamp:timestamp,dep_delay:float,arr_delay:float,num_flights:integer"
 
   with beam.Pipeline(options=pipeline_options) as p:
     arr = movingAverageOf(p, project, "arrived", speed_up_factor)
@@ -132,8 +167,13 @@ def run(project, speed_up_factor):
           'dep_num_flights': dep_num_flights
         }
       )
-      | 'Merge' >> beam.CoGroupByKey()
-      | beam.Map(print)
+      | 'airport:cogroup' >> beam.CoGroupByKey()
+      | 'airport:stats' >> beam.Map(stats)
+      | 'airport:to_BQrow' >> beam.Map(toBQRow)
+      | beam.io.gcp.bigquery.WriteToBigQuery(
+                table="{}:{}.{}".format(project, dataset, output_table),
+                schema=schema
+      )
     )
 
 if __name__ == '__main__':
@@ -141,6 +181,8 @@ if __name__ == '__main__':
    parser = argparse.ArgumentParser(description='Run pipeline on the cloud')
    parser.add_argument('-p','--project', help='Unique project ID', required=True)
    parser.add_argument('-s','--speed_up_factor', help='Bucket for staging', default=60)
+   parser.add_argument('-o','--output_table', help='BigQuery Table where your data is stored after processing.', default='airport_stats')
+   parser.add_argument('-d','--dataset', help='Bucket for staging', default='flights')
    args = vars(parser.parse_args())
   
-   run(project=args['project'], speed_up_factor=args['speed_up_factor'])
+   run(project=args['project'], speed_up_factor=args['speed_up_factor'], dataset=args['dataset'], output_table=args['output_table'])
