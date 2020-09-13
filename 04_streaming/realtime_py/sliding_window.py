@@ -100,7 +100,7 @@ def movingAverageOf(p, project, event, speed_up_factor):
   stats["timestamp"] = (
     flights
     | "{}:timestamps".format(event) >> beam.Map(lambda elm: (elm.airport, elm.timestamp))
-    | "{}:lastTimeStamp".format(event) >> beam.CombineGlobally(lambda elem: max(elem or [None])).without_defaults()
+    | "{}:lastTimeStamp".format(event) >> beam.CombinePerKey(lambda elem: max(elem))
   )
 
   stats["num_flights"] = (
