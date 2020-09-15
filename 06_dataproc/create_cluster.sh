@@ -28,4 +28,4 @@ gcloud beta dataproc clusters create \
    --optional-components=ANACONDA,JUPYTER \
    --initialization-actions=$INSTALL \
    --bucket=$BUCKET \
-   ch6-cluster
+   ch6cluster
