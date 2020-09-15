@@ -1,1 +1,1 @@
-gcloud dataproc clusters delete ch6cluster
+gcloud dataproc clusters delete --region us-west1 ch6cluster

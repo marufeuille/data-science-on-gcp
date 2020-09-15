@@ -1,13 +1,14 @@
 #!/bin/bash
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: ./create_cluster.sh  bucket-name  zone"
+if [ "$#" -ne 3 ]; then
+    echo "Usage: ./create_cluster.sh  bucket-name  region  zone"
     exit
 fi
 
 PROJECT=$(gcloud config get-value project)
 BUCKET=$1
-ZONE=$2
+REGION=$2
+ZONE=$3
 INSTALL=gs://$BUCKET/flights/dataproc/install_on_cluster.sh
 
 # upload install file
@@ -16,6 +17,8 @@ gsutil cp /tmp/install_on_cluster.sh $INSTALL
 
 # create cluster
 gcloud beta dataproc clusters create \
+   --region=$REGION \
+   --zone=$ZONE \
    --num-workers=2 \
    --scopes=cloud-platform \
    --worker-machine-type=n1-standard-4 \
@@ -23,6 +26,6 @@ gcloud beta dataproc clusters create \
    --image-version=1.4 \
    --enable-component-gateway \
    --optional-components=ANACONDA,JUPYTER \
-   --zone=$ZONE \
    --initialization-actions=$INSTALL \
-   ch6cluster
+   --bucket=$BUCKET \
+   ch6-cluster
